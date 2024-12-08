@@ -1,5 +1,6 @@
 import os
 import scanpy as sc
+from scipy.stats import median_abs_deviation
 import anndata as ad
 import logging
 import numpy as np
@@ -38,8 +39,14 @@ def log_information(log_text: str):
     Logs the information as well as prints it in console
     """
     logging.info(log_text)
-    print(log_text)#due to long computing times user is being visual updated that the program is still running and at which step
+    print(log_text)
 
+def is_outlier(adata, metric, nmads):
+    M = adata.obs[metric]
+    outlier = (M < np.median(M) - nmads * median_abs_deviation(M)) | (
+        np.median(M) + nmads * median_abs_deviation(M) < M
+    )
+    return outlier
 
 def mtx_to_h5ad(input_path: str, output_path: str) -> str:
     """
@@ -69,6 +76,8 @@ def mtx_to_h5ad(input_path: str, output_path: str) -> str:
 
         # Perform Quality Control
         sc.pp.calculate_qc_metrics(adata, qc_vars=["mt"], inplace=True, log1p=True)
+
+        # Create path
         output_path = os.path.join(output_path, f"qc.h5ad")
         sc.write(output_path, adata)
 
@@ -80,6 +89,12 @@ def mtx_to_h5ad(input_path: str, output_path: str) -> str:
             multi_panel=True
         )
         sc.pl.scatter(adata, "total_counts", "n_genes_by_counts", color="pct_counts_mt")
+
+        adata.obs["outlier"] = (
+                is_outlier(adata, "log1p_total_counts", 5)
+                | is_outlier(adata, "log1p_n_genes_by_counts", 5)
+        )
+        adata.obs.outlier.value_counts()
 
         log_information(f"Successfully processed file: {file_name}")
 
@@ -146,11 +161,20 @@ def filter(adata: ad.AnnData, output_path: str) -> str:
 
     :return: Path to the saved filtered AnnData object.
     """
+    """
     min_cell = int(input("Minimum number of cells in which gene is expressed: "))
     max_cell = int(input("Maximum number of cells in which gene is expressed: "))
     min_genes = int(input("Minimum amount of genes per cell: "))
     max_genes = int(input("Maximum amonut of genes per cell: "))
     mito = int(input("Count mito: "))
+    """
+    min_cell = 3
+    max_cell = 0
+    min_genes = 200
+    max_genes = 6000
+    mito = 15
+
+    logging.info(f"Filtering cells with parameters: \n min_cell = {min_cell} \n max_cell = {max_cell} \n min_genes = {min_genes} \n max_genes = {max_genes}")
 
     try:
         log_information(f"Filtering AnnData")
@@ -159,26 +183,33 @@ def filter(adata: ad.AnnData, output_path: str) -> str:
 
         if min_cell > 0:
             sc.pp.filter_genes(adata, min_cells=min_cell)
-            logging.info(f"Filtered genes that appear in less then {min_cell} cells")
 
         if max_cell > 0:
             sc.pp.filter_genes(adata, max_cells=max_cell)
             logging.info(f"Filtered genes that appear in more then {max_cell} cells")
 
         if min_genes > 0:
+            print(f"Total number of cells: {adata.n_obs}")
             sc.pp.filter_cells(adata, min_genes=min_genes)
-            logging.info(f"Filtered cells with less then {min_genes} genes")
+            print(f"Number of cells after filtering out ones with less then {min_genes} genes: {adata.n_obs}")
 
         if max_genes > 0:
+            print(f"Total number of cells: {adata.n_obs}")
             sc.pp.filter_cells(adata, max_genes=max_genes)
-            logging.info(f"Filtered cells with more then {max_genes} genes")
+            print(f"Number of cells after filtering out ones with more then {max_genes} genes: {adata.n_obs}")
 
         if mito > 0:
             if 'pct_counts_mt' not in adata.obs.columns:
                 raise ValueError("'pct_counts_mt' column is missing in adata.obs")
 
-            adata = adata[adata.obs['pct_counts_mt'] <= mito].copy()
-            logging.info(f"Filtered cells with less then {mito}% mitchondrial genes")
+            adata.obs["mt_outlier"] = (
+                    is_outlier(adata, "pct_counts_mt", 3)
+                    | (adata.obs["pct_counts_mt"] > mito)
+            )
+
+            print(f"Total number of cells: {adata.n_obs}")
+            adata = adata[(~adata.obs.get("outlier", False)) & (~adata.obs["mt_outlier"])].copy()
+            print(f"Number of cells after filtering of low quality cells: {adata.n_obs}")
 
         if os.path.exists(output_path):
             base_name, ext = os.path.splitext(output_path)
@@ -470,5 +501,5 @@ def run_analysis(input_path, output_path):
     compare_top_genes(adata, cvs_file_path, output_path)
 
 if __name__ == "__main__":
-    setup_logging("your_path")
-    run_analysis("your_path_input_data", "your_path_results")
+    setup_logging("C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\mainlog.log")
+    run_analysis("C:\\Users\\User\\Desktop\\pythonProject1\\testcase\\test2", "C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test2")
