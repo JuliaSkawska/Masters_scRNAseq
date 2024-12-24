@@ -48,6 +48,38 @@ def is_outlier(adata, metric, nmads):
     )
     return outlier
 
+def merge_sets(input_path: str, output_path: str) -> str:
+    try:
+        logging.info(f"Attempting to merge together files in {input_path}")
+        if not os.path.exists(input_path):
+            raise FileNotFoundError(f"The directory '{input_path}' does not exist.")
+        if not os.path.isdir(input_path):
+            raise NotADirectoryError(f"The path '{input_path}' is not a directory.")
+
+        files = []
+
+        for file in os.listdir(input_path):
+            file_path = os.path.join(input_path,file)
+
+            if os.path.isdir(file_path):
+                try:
+                    adata = sc.read_10x_mtx(file_path, var_names="gene_symbols", cache=True)
+                    adata.obs['dataset'] = file
+                    files.append(adata)
+                except Exception as e:
+                    logging.warning(f"Failed to process dataset in {file_path}: {e}")
+
+        merged_adata = files[0].concatenate(*files[1:], batch_key="batch")
+        merged_adata.write("merged_dataset.h5ad")
+        output_path = os.path.join(output_path, f"merged_dataset.h5ad")
+
+        logging.info(f"Merged dataset saved at: {output_path}")
+
+        return output_path
+
+    except Exception as e:
+        logging.error(f"An error while trying to merge files in {input_path}: {e}")
+
 def mtx_to_h5ad(input_path: str, output_path: str) -> str:
     """
     Converts a 10x Genomics data file to AnnData format and saves it as h5ad file.
@@ -503,3 +535,11 @@ def run_analysis(input_path, output_path):
 if __name__ == "__main__":
     setup_logging("C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\mainlog.log")
     run_analysis("C:\\Users\\User\\Desktop\\pythonProject1\\testcase\\test2", "C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test2")
+
+    task = input("Which task should be run: ( chose number ) \n 1. Merge sets \n 2. Run analysis \n 3. END")
+    input_path = input()
+    output_path = input()
+
+    if task.strip() == "1":
+        merge_sets(input_path,output_path)
+
