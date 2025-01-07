@@ -5,12 +5,14 @@ import anndata as ad
 import logging
 import numpy as np
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 sc.settings.set_figure_params(dpi=100, facecolor="white")
 
 """
 The reason that all those steps are done in separate functions is due to the fact that often certian parts of scRNA-seq 
-pipelien need to be repeated, this allows the user to only repeat the part that is necessery for what they are trying 
+pipeline need to be repeated, this allows the user to only repeat the part that is necessery for what they are trying 
 to do
 
 Note to self 1: Need to add the ability for user to choose which parts of the code need to be run via console instead of 
@@ -19,20 +21,15 @@ messing with the code
 Note to self 2: Need to fix the image saving options, atm they dont get saved and need to be downloaded manually
 """
 
+
 def setup_logging(log_file: str):
     """
-    Sets up logging configuration.
+    Sets up logging configuration, as well as a folder to save images in
 
     log_file: Path to where the log file should be saved.
     """
     logging.basicConfig(filename=log_file, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-
-def validate_path(path: str) -> bool:
-    """
-    Checks if a path exists ( and is a directory )
-    """
-    return os.path.isdir(path)
 
 def log_information(log_text: str):
     """
@@ -41,12 +38,14 @@ def log_information(log_text: str):
     logging.info(log_text)
     print(log_text)
 
+
 def is_outlier(adata, metric, nmads):
-    M = adata.obs[metric]
-    outlier = (M < np.median(M) - nmads * median_abs_deviation(M)) | (
-        np.median(M) + nmads * median_abs_deviation(M) < M
+    met = adata.obs[metric]
+    outlier = (met < np.median(met) - nmads * median_abs_deviation(met)) | (
+        np.median(met) + nmads * median_abs_deviation(met) < met
     )
     return outlier
+
 
 def merge_sets(input_path: str, output_path: str) -> str:
     try:
@@ -59,7 +58,7 @@ def merge_sets(input_path: str, output_path: str) -> str:
         files = []
 
         for file in os.listdir(input_path):
-            file_path = os.path.join(input_path,file)
+            file_path = os.path.join(input_path, file)
 
             if os.path.isdir(file_path):
                 try:
@@ -69,9 +68,9 @@ def merge_sets(input_path: str, output_path: str) -> str:
                 except Exception as e:
                     logging.warning(f"Failed to process dataset in {file_path}: {e}")
 
-        merged_adata = files[0].concatenate(*files[1:], batch_key="batch")
-        merged_adata.write("merged_dataset.h5ad")
+        merged_adata = files[0].concatenate(*files[1:], batch_key="batch", join="outlier")#pytanie - czy dodawać join outlier by zapobiegać błędą przy braku elementów
         output_path = os.path.join(output_path, f"merged_dataset.h5ad")
+        sc.write(output_path, merged_adata)
 
         logging.info(f"Merged dataset saved at: {output_path}")
 
@@ -80,9 +79,9 @@ def merge_sets(input_path: str, output_path: str) -> str:
     except Exception as e:
         logging.error(f"An error while trying to merge files in {input_path}: {e}")
 
-def mtx_to_h5ad(input_path: str, output_path: str) -> str:
+
+def quality_check(input_path: str, output_path: str) -> str:
     """
-    Converts a 10x Genomics data file to AnnData format and saves it as h5ad file.
     Annotates mitochondrial genes and performs a quality check
 
     input_path: Path to the folder containing the 10x Genomics data.
@@ -91,8 +90,8 @@ def mtx_to_h5ad(input_path: str, output_path: str) -> str:
     :return: Path to the saved h5ad file.
     """
 
-    if not validate_path(input_path):
-        logging.error(f"Input path is not a valid directory: {input_path}")
+    if not os.path.exists(input_path):
+        logging.error(f"Input path does not exist: {input_path}")
         raise
 
     if not os.path.exists(output_path):
@@ -103,30 +102,40 @@ def mtx_to_h5ad(input_path: str, output_path: str) -> str:
         log_information(f"Pre-processing file: {file_name}")
 
         # Annotate mitochondrial genes
-        adata = sc.read_10x_mtx(input_path, var_names='gene_symbols', cache=True)
+        #adata = sc.read_10x_mtx(input_path, var_names='gene_symbols', cache=True)
+        adata = sc.read_h5ad(input_path)
         adata.var["mt"] = adata.var_names.str.startswith("MT-")
 
-        # Perform Quality Control
         sc.pp.calculate_qc_metrics(adata, qc_vars=["mt"], inplace=True, log1p=True)
-
-        # Create path
-        output_path = os.path.join(output_path, f"qc.h5ad")
-        sc.write(output_path, adata)
-
-        # Plot QC metrics
-        sc.pl.violin(
-            adata,
-            ["n_genes_by_counts", "total_counts", "pct_counts_mt"],
-            jitter=0.4,
-            multi_panel=True
-        )
-        sc.pl.scatter(adata, "total_counts", "n_genes_by_counts", color="pct_counts_mt")
 
         adata.obs["outlier"] = (
                 is_outlier(adata, "log1p_total_counts", 5)
                 | is_outlier(adata, "log1p_n_genes_by_counts", 5)
         )
         adata.obs.outlier.value_counts()
+        log_information(f"Outliers found: {adata.obs['outlier'].sum()} cells")
+
+        # Setting a path for images to be saved in pytanie - nie wiem w sumie czy nie lepiej by to ustawiać poza funkcją
+        image_path = os.path.join(output_path, "Images")
+        os.makedirs(image_path, exist_ok=True)
+        sc.settings.figdir = image_path
+
+        output_path = os.path.join(output_path, f"qc.h5ad")
+        sc.write(output_path, adata)
+
+        # Plot QC metrics - pytanie czy ten histogram jest potrzebny
+        plt.figure(figsize=(8, 6))
+        sns.histplot(adata.obs["total_counts"], bins=100, kde=False)
+        plt.title("Histogram of Total Counts")
+        plt.xlabel("Total Counts")
+        plt.ylabel("Frequency")
+        hist_path = os.path.join(image_path, "total_counts_histogram.png")
+        plt.savefig(hist_path)
+        plt.show()
+        plt.close()
+
+        sc.pl.violin(adata, "pct_counts_mt", save="_plot.png")
+        sc.pl.scatter(adata, x="total_counts", y="n_genes_by_counts", color="pct_counts_mt", save="_plot.png")
 
         log_information(f"Successfully processed file: {file_name}")
 
@@ -157,7 +166,7 @@ def get_ann(input_path: str) -> ad.AnnData:
 
 def check_ann(adata: ad.AnnData):
     """
-    Gives basic information about AnnData file
+    Gives basic information about AnnData file - diagnostic tool
 
     Used for debugging purposes, or to check if the file has the expected data
     """
@@ -180,6 +189,12 @@ def check_ann(adata: ad.AnnData):
         else:
             logging.warning("No observation annotations available.")
 
+        if "batch" in adata.obs:
+            print(f"Number of batches: {adata.obs['batch'].nunique()}")
+            print("Batch distribution:\n", adata.obs['batch'].value_counts())
+        else:
+            print(f"No batches detected in dataset")
+
     except Exception as e:
         logging.error(f"An error occurred when retrieving information from .h5ad file: {e}")
 
@@ -197,9 +212,10 @@ def filter(adata: ad.AnnData, output_path: str) -> str:
     min_cell = int(input("Minimum number of cells in which gene is expressed: "))
     max_cell = int(input("Maximum number of cells in which gene is expressed: "))
     min_genes = int(input("Minimum amount of genes per cell: "))
-    max_genes = int(input("Maximum amonut of genes per cell: "))
+    max_genes = int(input("Maximum amount of genes per cell: "))
     mito = int(input("Count mito: "))
     """
+    #pytanie - czy każdy batch powinnien być filtrowany osobno czy można to zrobić globalnie ( tak jak jest teraz )
     min_cell = 3
     max_cell = 0
     min_genes = 200
@@ -210,23 +226,24 @@ def filter(adata: ad.AnnData, output_path: str) -> str:
 
     try:
         log_information(f"Filtering AnnData")
+        log_information(f"Number of cells: {adata.n_obs} before filtering")
+        log_information(f"Number of genes: {adata.n_vars} before filtering")
 
         output_path = os.path.join(output_path, f"filtered.h5ad")
 
         if min_cell > 0:
             sc.pp.filter_genes(adata, min_cells=min_cell)
+            print(f"Number of genes after filtering out ones that appear in less then {min_cell} cells: {adata.n_vars}")
 
         if max_cell > 0:
             sc.pp.filter_genes(adata, max_cells=max_cell)
-            logging.info(f"Filtered genes that appear in more then {max_cell} cells")
+            print(f"Number of genes after filtering out ones that appear in more then {max_cell} cells: {adata.n_vars}")
 
         if min_genes > 0:
-            print(f"Total number of cells: {adata.n_obs}")
             sc.pp.filter_cells(adata, min_genes=min_genes)
             print(f"Number of cells after filtering out ones with less then {min_genes} genes: {adata.n_obs}")
 
         if max_genes > 0:
-            print(f"Total number of cells: {adata.n_obs}")
             sc.pp.filter_cells(adata, max_genes=max_genes)
             print(f"Number of cells after filtering out ones with more then {max_genes} genes: {adata.n_obs}")
 
@@ -239,9 +256,8 @@ def filter(adata: ad.AnnData, output_path: str) -> str:
                     | (adata.obs["pct_counts_mt"] > mito)
             )
 
-            print(f"Total number of cells: {adata.n_obs}")
             adata = adata[(~adata.obs.get("outlier", False)) & (~adata.obs["mt_outlier"])].copy()
-            print(f"Number of cells after filtering of low quality cells: {adata.n_obs}")
+            print(f"Number of cells after filtering of low quality cells ( including outliers ): {adata.n_obs}")
 
         if os.path.exists(output_path):
             base_name, ext = os.path.splitext(output_path)
@@ -274,17 +290,12 @@ def normalize(adata: ad.AnnData, output_path: str) -> str:
     try:
         log_information(f"Normalizing AnnData")
 
-        # Detecting doublets
         sc.pp.scrublet(adata)
-        # Saving count data
         adata.layers["counts"] = adata.X.copy()
-        # Normalizing to median total counts
         sc.pp.normalize_total(adata)
-        # Logarithmizing the data
         sc.pp.log1p(adata)
-        # Marking highly variable genes
-        sc.pp.highly_variable_genes(adata, n_top_genes=2000)
-        sc.pl.highly_variable_genes(adata)
+        #sc.pp.highly_variable_genes(adata)
+        sc.pp.highly_variable_genes(adata, batch_key="batch")
 
         output_path = os.path.join(output_path, f"normalized.h5ad")
         sc.write(output_path, adata)
@@ -313,7 +324,7 @@ def reduce_dimensions(adata: ad.AnnData, output_path: str) -> str:
         sc.pl.pca_variance_ratio(adata, n_pcs=50, log=True)
         sc.pp.neighbors(adata)
         sc.tl.umap(adata)
-        sc.pl.umap(adata, size=2,)
+        sc.pl.umap(adata, size=2, save="_dimension_reduction.png")
 
         output_path = os.path.join(output_path, f"pca_umap.h5ad")
         sc.write(output_path, adata)
@@ -361,10 +372,10 @@ def clustering(adata: ad.AnnData, output_path: str, n_iterations: int = 2, rando
 
         # Ploting UMAPs
         logging.info("Generating UMAP plots.")
-        sc.pl.umap(adata, color=["louvain"], legend_loc="on data")
-        sc.pl.umap(adata, color=["louvain", "predicted_doublet", "doublet_score"], wspace=0.5, size=3,)
+        sc.pl.umap(adata, color=["louvain"], legend_loc="on data", save="_on_data.png")
+        sc.pl.umap(adata, color=["louvain", "predicted_doublet", "doublet_score"], wspace=0.5, size=3, save="_doublets.png")
         sc.pl.umap(adata, color=["louvain", "log1p_total_counts", "pct_counts_mt", "log1p_n_genes_by_counts"],
-                   wspace=0.5, ncols=2,)
+                   wspace=0.5, ncols=2, save="_quality.png")
 
         output_path = os.path.join(output_path, f"clustered_louvain.h5ad")
 
@@ -399,23 +410,22 @@ def mark_genes(adata: ad.AnnData, output_path: str) -> str:
         # Perform ranking of genes based on groups
         sc.tl.rank_genes_groups(adata, groupby="louvain", method="wilcoxon")
 
-        # Display a dot plot of ranked genes
-        sc.pl.rank_genes_groups_dotplot(adata, groupby="louvain", standard_scale="var", n_genes=5)
-
         # Display UMAP plot colored by specific genes and louvain clusters
         sc.pl.umap(
             adata,
             color=["louvain", "SLPI", "ELANE", "COL3A1", "FBN1", "LUM"],
             frameon=False,
             ncols=3,
+            save="_fibroblast_marker.png",
         )
 
         # Prompt for group number for further analysis
-        group = input("Enter group number for further analysis (type END to end the program): ")
+        group_id = input("Which groups should be checked for ranked genes ( separate numbers using ,): ")
+        group_list = [id.strip() for id in group_id.split(',')]
 
-        while group != "END":
+        for elem in group_list:
             # Get top 5 ranked genes for the specified group
-            ranked_genes_df = sc.get.rank_genes_groups_df(adata, group=group)
+            ranked_genes_df = sc.get.rank_genes_groups_df(adata, group=elem)
             dc_cluster_genes = ranked_genes_df.head(5)["names"].tolist()
 
             # Update UMAP plot with top ranked genes for the specified group
@@ -424,10 +434,8 @@ def mark_genes(adata: ad.AnnData, output_path: str) -> str:
                 color=["louvain"] + dc_cluster_genes,  # Include louvain and top genes for color
                 frameon=False,
                 ncols=3,
+                save=f"_top_genes_{elem}.png",
             )
-
-            # Prompt again for group number
-            group = input("Enter group number for further analysis (type END to end the program): ")
 
         log_information("Genes marked successfully")
 
@@ -493,7 +501,8 @@ def compare_top_genes(adata: ad.AnnData, input_path: str, output_path: str):
 
                 sc.pl.heatmap(adata, var_names=top_genes, groupby="louvain", cmap="viridis",
                             figsize=(36, 24),
-                            show_gene_labels=True)
+                            show_gene_labels=True,
+                            save=f"_{elem}.png")
 
                 logging.info("Heatmap created successfully")
 
@@ -519,7 +528,15 @@ def compare_top_genes(adata: ad.AnnData, input_path: str, output_path: str):
 
 
 def run_analysis(input_path, output_path):
-    current_file = mtx_to_h5ad(input_path, output_path)
+    save_directory = os.path.join(output_path, "Images")
+
+    if not os.path.exists(save_directory):
+        os.makedirs(save_directory)
+        print(f"Folder 'Images' created at {save_directory}")
+    else:
+        print(f"Folder 'Images' already exists at {save_directory}")
+
+    current_file = quality_check(input_path, output_path)
     adata = get_ann(current_file)
     current_file = filter(adata, output_path)
     adata = get_ann(current_file)
@@ -534,12 +551,20 @@ def run_analysis(input_path, output_path):
 
 if __name__ == "__main__":
     setup_logging("C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\mainlog.log")
-    run_analysis("C:\\Users\\User\\Desktop\\pythonProject1\\testcase\\test2", "C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test2")
 
-    task = input("Which task should be run: ( chose number ) \n 1. Merge sets \n 2. Run analysis \n 3. END")
+    run_analysis("C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test3\\merged_dataset.h5ad","C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test3")
+
+    #merge_sets("C:\\Users\\User\\Desktop\\pythonProject1\\testcase\\test3","C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test3")
+    """
+    task = input("Which task should be run: ( chose number ) \n 1. Merge sets \n 2. Run analysis \n 3. END \n")
     input_path = input()
     output_path = input()
+    task = task.strip()
 
-    if task.strip() == "1":
-        merge_sets(input_path,output_path)
+    if task == "1":
+        merge_sets(input_path, output_path)
+    elif task == "2":
+        #run_analysis(input_path, output_path)
+        run_analysis("C:\\Users\\User\\Desktop\\pythonProject1\\testcase\\test2","C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test2")
+    """
 
