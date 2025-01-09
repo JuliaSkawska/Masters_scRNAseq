@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import bbknn
 
 sc.settings.set_figure_params(dpi=100, facecolor="white")
 
@@ -68,7 +69,7 @@ def merge_sets(input_path: str, output_path: str) -> str:
                 except Exception as e:
                     logging.warning(f"Failed to process dataset in {file_path}: {e}")
 
-        merged_adata = files[0].concatenate(*files[1:], batch_key="batch", join="outlier")#pytanie - czy dodawać join outlier by zapobiegać błędą przy braku elementów
+        merged_adata = files[0].concatenate(*files[1:], batch_key="batch", join="outer")#pytanie - czy dodawać join outer by zapobiegać błędą przy braku elementów
         output_path = os.path.join(output_path, f"merged_dataset.h5ad")
         sc.write(output_path, merged_adata)
 
@@ -79,6 +80,17 @@ def merge_sets(input_path: str, output_path: str) -> str:
     except Exception as e:
         logging.error(f"An error while trying to merge files in {input_path}: {e}")
 
+def integrate_sets(adata: ad.AnnData, output_path: str) -> str:
+    try:
+        log_information(f"Integrating AnnData")
+        adata_integrated = bbknn.bbknn(adata, batch_key="batch")
+        output_path = os.path.join(output_path, f"integrated_dataset.h5ad")
+        sc.write(output_path, adata_integrated)
+
+        return output_path
+
+    except Exception as e:
+        logging.error(f"An error occured while trying to integrate AnnData: {e}")
 
 def quality_check(input_path: str, output_path: str) -> str:
     """
@@ -371,11 +383,19 @@ def clustering(adata: ad.AnnData, output_path: str, n_iterations: int = 2, rando
         }
 
         # Ploting UMAPs
-        logging.info("Generating UMAP plots.")
-        sc.pl.umap(adata, color=["louvain"], legend_loc="on data", save="_on_data.png")
-        sc.pl.umap(adata, color=["louvain", "predicted_doublet", "doublet_score"], wspace=0.5, size=3, save="_doublets.png")
-        sc.pl.umap(adata, color=["louvain", "log1p_total_counts", "pct_counts_mt", "log1p_n_genes_by_counts"],
-                   wspace=0.5, ncols=2, save="_quality.png")
+        if "batch" in adata.obs:
+            color = ["louvain","batch"]
+            color_dub = ["louvain", "batch", "predicted_doublet", "doublet_score"]
+            color_pct = ["louvain", "batch", "pct_counts_mt", "log1p_n_genes_by_counts"]
+        else:
+            color = ["louvain"]
+            color_dub = ["louvain", "predicted_doublet", "doublet_score"]
+            color_pct = ["louvain", "pct_counts_mt", "log1p_n_genes_by_counts"]
+
+        log_information("Generating UMAP plots")
+        sc.pl.umap(adata, color=color, legend_loc="on data", save="_on_data.png")
+        sc.pl.umap(adata, color=color_dub, wspace=0.5, size=3, save="_doublets.png")
+        sc.pl.umap(adata, color=color_pct, wspace=0.5, ncols=2, save="_quality.png")
 
         output_path = os.path.join(output_path, f"clustered_louvain.h5ad")
 
