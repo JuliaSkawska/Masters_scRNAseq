@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import bbknn
+from biomart import BiomartServer
 
 sc.settings.set_figure_params(dpi=100, facecolor="white")
 
@@ -48,6 +48,35 @@ def is_outlier(adata, metric, nmads):
     return outlier
 
 
+def ensg_to_symbol(input_path, output_path) -> None:
+    try:
+        log_information(f"Adding gene symbols")
+
+        server = BiomartServer("http://www.ensembl.org/biomart")
+        dataset = server.datasets['hsapiens_gene_ensembl']
+
+        for file in os.listdir(input_path):
+            file_path = os.path.join(input_path, file)
+            log_information(f"Processing file in {file_path}")
+
+            data = pd.read_csv(file_path, compression = "gzip", index_col=0, header=None)
+            ensembl_ids = data[0,1:].dropna().tolist()
+
+            response = dataset.search({'filters':{'ensembl_gene_id': ensembl_ids},'attributes': ['ensembl_gene_id','external_gene_name']})
+
+            biomart_results = [line.decode('utf-8').split("\t") for line in response.iter_lines()]
+            gene_mapping = pd.DataFrame(biomart_results, columns=["Ensembl_ID", "Gene_Symbol"])
+            gene_mapping_dict = gene_mapping.set_index("Ensembl_ID")["Gene_Symbol"].to_dict()
+            data.columns = [gene_mapping_dict.get(col, col) if idx > 0 else col for idx, col in enumerate(data.columns)]
+
+            output_file = os.path.join(output_path, f"{os.path.splitext(file)[0]}_gene_symbols_added.csv.gz")
+            data.to_csv(output_file, compression="gzip")
+            logging.info(f"File saved: {output_file}")
+
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
+
+
 def merge_sets(input_path: str, output_path: str) -> str:
     try:
         logging.info(f"Attempting to merge together files in {input_path}")
@@ -60,16 +89,17 @@ def merge_sets(input_path: str, output_path: str) -> str:
 
         for file in os.listdir(input_path):
             file_path = os.path.join(input_path, file)
+            print(file_path)
 
-            if os.path.isdir(file_path):
-                try:
-                    adata = sc.read_10x_mtx(file_path, var_names="gene_symbols", cache=True)
-                    adata.obs['dataset'] = file
-                    files.append(adata)
-                except Exception as e:
-                    logging.warning(f"Failed to process dataset in {file_path}: {e}")
+            if file.endswith(".csv.gz"):
+                adata_df = pd.read_csv(file_path, compression='gzip', index_col=0)
+                adata = sc.AnnData(adata_df)
+                adata.obs['dataset'] = file
+                files.append(adata)
+            else:
+                logging.warning(f"Skipping non-CSV file: {file_path}")
 
-        merged_adata = files[0].concatenate(*files[1:], batch_key="batch", join="outer")#pytanie - czy dodawać join outer by zapobiegać błędą przy braku elementów
+        merged_adata = files[0].concatenate(*files[1:], batch_key="batch", join="outer")#pytanie - czy dodawać join outer czy nie
         output_path = os.path.join(output_path, f"merged_dataset.h5ad")
         sc.write(output_path, merged_adata)
 
@@ -80,10 +110,11 @@ def merge_sets(input_path: str, output_path: str) -> str:
     except Exception as e:
         logging.error(f"An error while trying to merge files in {input_path}: {e}")
 
+
 def integrate_sets(adata: ad.AnnData, output_path: str) -> str:
     try:
         log_information(f"Integrating AnnData")
-        adata_integrated = bbknn.bbknn(adata, batch_key="batch")
+        adata_integrated = sc.tl.mnn_correct(adata, batch_key='batch') 
         output_path = os.path.join(output_path, f"integrated_dataset.h5ad")
         sc.write(output_path, adata_integrated)
 
@@ -91,6 +122,7 @@ def integrate_sets(adata: ad.AnnData, output_path: str) -> str:
 
     except Exception as e:
         logging.error(f"An error occured while trying to integrate AnnData: {e}")
+
 
 def quality_check(input_path: str, output_path: str) -> str:
     """
@@ -114,9 +146,9 @@ def quality_check(input_path: str, output_path: str) -> str:
         log_information(f"Pre-processing file: {file_name}")
 
         # Annotate mitochondrial genes
-        #adata = sc.read_10x_mtx(input_path, var_names='gene_symbols', cache=True)
         adata = sc.read_h5ad(input_path)
-        adata.var["mt"] = adata.var_names.str.startswith("MT-")
+        mito_genes = [gene for gene in adata.var_names if gene.lower().startswith("mt-")]
+        adata.var["mt"] = adata.var_names.isin(mito_genes)
 
         sc.pp.calculate_qc_metrics(adata, qc_vars=["mt"], inplace=True, log1p=True)
 
@@ -125,6 +157,7 @@ def quality_check(input_path: str, output_path: str) -> str:
                 | is_outlier(adata, "log1p_n_genes_by_counts", 5)
         )
         adata.obs.outlier.value_counts()
+
         log_information(f"Outliers found: {adata.obs['outlier'].sum()} cells")
 
         # Setting a path for images to be saved in pytanie - nie wiem w sumie czy nie lepiej by to ustawiać poza funkcją
@@ -570,11 +603,17 @@ def run_analysis(input_path, output_path):
     compare_top_genes(adata, cvs_file_path, output_path)
 
 if __name__ == "__main__":
-    setup_logging("C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\mainlog.log")
+    setup_logging("C:\\Users\\Julia\\Desktop\\scrna\\dane\\mainlog.log")
+    #adata=get_ann("C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset.h5ad")
+    #print(adata.var.index[:10])
+    
+    ensg_to_symbol("C:\\Users\Julia\\Desktop\\scrna\\dane\\test","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres")
 
-    run_analysis("C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test3\\merged_dataset.h5ad","C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test3")
+    #quality_check("C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset.h5ad","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres")
 
-    #merge_sets("C:\\Users\\User\\Desktop\\pythonProject1\\testcase\\test3","C:\\Users\\User\\Desktop\\pythonProject1\\rescase\\test3")
+    #run_analysis("C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset.h5ad","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres")
+
+    #merge_sets("C:\\Users\\Julia\\Desktop\\scrna\\dane\\test","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres")
     """
     task = input("Which task should be run: ( chose number ) \n 1. Merge sets \n 2. Run analysis \n 3. END \n")
     input_path = input()
