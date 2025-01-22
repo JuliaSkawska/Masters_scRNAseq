@@ -118,7 +118,7 @@ def merge_sets_2(input_path: str, output_path: str) -> str:
 def integrate_sets(adata: ad.AnnData, output_path: str) -> str:
     try:
         log_information(f"Integrating AnnData")
-        adata_integrated = sc.tl.mnn_correct(adata, batch_key='batch') 
+        adata_integrated = sc.tl.mnn_correct(adata, batch_key='batch')#albo bbknn 
         output_path = os.path.join(output_path, f"integrated_dataset.h5ad")
         sc.write(output_path, adata_integrated)
 
@@ -366,7 +366,7 @@ def reduce_dimensions(adata: ad.AnnData, output_path: str) -> str:
         sc.tl.pca(adata)
         sc.pl.pca_variance_ratio(adata, n_pcs=50, log=True)
         sc.pp.neighbors(adata)
-        sc.tl.umap(adata)
+        sc.tl.umap(adata)#tutaj już integracja
         sc.pl.umap(adata, size=2, save="_dimension_reduction.png")
 
         output_path = os.path.join(output_path, f"pca_umap.h5ad")
