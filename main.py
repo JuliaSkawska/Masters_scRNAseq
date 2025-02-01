@@ -7,21 +7,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from biomart import BiomartServer
 
 sc.settings.set_figure_params(dpi=100, facecolor="white")
-
-"""
-The reason that all those steps are done in separate functions is due to the fact that often certian parts of scRNA-seq 
-pipeline need to be repeated, this allows the user to only repeat the part that is necessery for what they are trying 
-to do
-
-Note to self 1: Need to add the ability for user to choose which parts of the code need to be run via console instead of 
-messing with the code 
-
-Note to self 2: Need to fix the image saving options, atm they dont get saved and need to be downloaded manually
-"""
-
 
 def setup_logging(log_file: str):
     """
@@ -48,38 +35,9 @@ def is_outlier(adata, metric, nmads):
     return outlier
 
 
-def ensg_to_symbol(input_path, output_path) -> None:
+def merge_sets_1(input_path: str, output_path: str) -> str:
     try:
-        log_information(f"Adding gene symbols")
-
-        server = BiomartServer("http://www.ensembl.org/biomart")
-        dataset = server.datasets['hsapiens_gene_ensembl']
-
-        for file in os.listdir(input_path):
-            file_path = os.path.join(input_path, file)
-            log_information(f"Processing file in {file_path}")
-
-            data = pd.read_csv(file_path, compression = "gzip", index_col=0, header=None)
-            ensembl_ids = data[0,1:].dropna().tolist()
-
-            response = dataset.search({'filters':{'ensembl_gene_id': ensembl_ids},'attributes': ['ensembl_gene_id','external_gene_name']})
-
-            biomart_results = [line.decode('utf-8').split("\t") for line in response.iter_lines()]
-            gene_mapping = pd.DataFrame(biomart_results, columns=["Ensembl_ID", "Gene_Symbol"])
-            gene_mapping_dict = gene_mapping.set_index("Ensembl_ID")["Gene_Symbol"].to_dict()
-            data.columns = [gene_mapping_dict.get(col, col) if idx > 0 else col for idx, col in enumerate(data.columns)]
-
-            output_file = os.path.join(output_path, f"{os.path.splitext(file)[0]}_gene_symbols_added.csv.gz")
-            data.to_csv(output_file, compression="gzip")
-            logging.info(f"File saved: {output_file}")
-
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
-
-
-def merge_sets(input_path: str, output_path: str) -> str:
-    try:
-        logging.info(f"Attempting to merge together files in {input_path}")
+        logging.info(f"Attempting to merge together files in {input_path} using merge_sets_1")
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"The directory '{input_path}' does not exist.")
         if not os.path.isdir(input_path):
@@ -92,15 +50,23 @@ def merge_sets(input_path: str, output_path: str) -> str:
             print(file_path)
 
             if file.endswith(".csv.gz"):
-                adata_df = pd.read_csv(file_path, compression='gzip', index_col=0)
-                adata = sc.AnnData(adata_df)
-                adata.obs['dataset'] = file
+                df = pd.read_csv(file_path, compression='gzip', index_col=0)  
+                X = df.iloc[:, :-1].values
+                gene_names = df['gene_symbol'].values
+                gene_ids = df.index.values
+                adata = sc.AnnData(X)
+                if adata.var.shape[0] != len(gene_ids):
+                    adata.var = pd.DataFrame(index=gene_ids)#moim zdaniem po paru próbach tutaj coś wysiada ale nie wiem dla czego 
+                adata.var['gene_ids'] = gene_ids
+                adata.var['gene_symbol'] = gene_names
+                adata.obs['cell_ids'] = df.columns[:-1].values
                 files.append(adata)
+
             else:
                 logging.warning(f"Skipping non-CSV file: {file_path}")
 
-        merged_adata = files[0].concatenate(*files[1:], batch_key="batch", join="outer")#pytanie - czy dodawać join outer czy nie
-        output_path = os.path.join(output_path, f"merged_dataset.h5ad")
+        merged_adata = files[0].concatenate(*files[1:], batch_key="batch")
+        output_path = os.path.join(output_path, "merged_dataset_test_1.h5ad")
         sc.write(output_path, merged_adata)
 
         logging.info(f"Merged dataset saved at: {output_path}")
@@ -111,10 +77,48 @@ def merge_sets(input_path: str, output_path: str) -> str:
         logging.error(f"An error while trying to merge files in {input_path}: {e}")
 
 
+def merge_sets_2(input_path: str, output_path: str) -> str:
+    try:
+        logging.info(f"Attempting to merge together files in {input_path} using merge_sets_2")
+        if not os.path.exists(input_path):
+            raise FileNotFoundError(f"The directory '{input_path}' does not exist.")
+        if not os.path.isdir(input_path):
+            raise NotADirectoryError(f"The path '{input_path}' is not a directory.")
+
+        files = []
+
+        for file in os.listdir(input_path):
+            file_path = os.path.join(input_path, file)
+            print(file_path)
+
+            if file.endswith(".csv.gz"):
+                adata_df = pd.read_csv(file_path, compression='gzip', index_col=0)  
+                adata_df = adata_df.apply(pd.to_numeric, errors='coerce') 
+                gene_symbols = adata_df.pop('gene_symbol')  
+                adata = sc.AnnData(adata_df) 
+                adata.var['gene_symbol'] = gene_symbols  
+
+                files.append(adata)
+            else:
+                logging.warning(f"Skipping non-CSV file: {file_path}")
+
+        merged_adata = files[0].concatenate(*files[1:], batch_key="batch")
+        output_path = os.path.join(output_path, "merged_dataset_test_2.h5ad")
+        sc.write(output_path, merged_adata)
+
+        logging.info(f"Merged dataset saved at: {output_path}")
+
+        return output_path
+
+    except Exception as e:
+        logging.error(f"An error while trying to merge files in {input_path}: {e}")
+
+
+
 def integrate_sets(adata: ad.AnnData, output_path: str) -> str:
     try:
         log_information(f"Integrating AnnData")
-        adata_integrated = sc.tl.mnn_correct(adata, batch_key='batch') 
+        adata_integrated = sc.tl.mnn_correct(adata, batch_key='batch')#albo bbknn 
         output_path = os.path.join(output_path, f"integrated_dataset.h5ad")
         sc.write(output_path, adata_integrated)
 
@@ -211,7 +215,7 @@ def get_ann(input_path: str) -> ad.AnnData:
 
 def check_ann(adata: ad.AnnData):
     """
-    Gives basic information about AnnData file - diagnostic tool
+    Gives basic information about AnnData file
 
     Used for debugging purposes, or to check if the file has the expected data
     """
@@ -233,12 +237,6 @@ def check_ann(adata: ad.AnnData):
             print("Available observations (annotations):", adata.obs)
         else:
             logging.warning("No observation annotations available.")
-
-        if "batch" in adata.obs:
-            print(f"Number of batches: {adata.obs['batch'].nunique()}")
-            print("Batch distribution:\n", adata.obs['batch'].value_counts())
-        else:
-            print(f"No batches detected in dataset")
 
     except Exception as e:
         logging.error(f"An error occurred when retrieving information from .h5ad file: {e}")
@@ -368,7 +366,7 @@ def reduce_dimensions(adata: ad.AnnData, output_path: str) -> str:
         sc.tl.pca(adata)
         sc.pl.pca_variance_ratio(adata, n_pcs=50, log=True)
         sc.pp.neighbors(adata)
-        sc.tl.umap(adata)
+        sc.tl.umap(adata)#tutaj już integracja
         sc.pl.umap(adata, size=2, save="_dimension_reduction.png")
 
         output_path = os.path.join(output_path, f"pca_umap.h5ad")
@@ -604,16 +602,26 @@ def run_analysis(input_path, output_path):
 
 if __name__ == "__main__":
     setup_logging("C:\\Users\\Julia\\Desktop\\scrna\\dane\\mainlog.log")
-    #adata=get_ann("C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset.h5ad")
+    min_test = ["C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset_test_unspecified.h5ad"]
+    list_test = ["C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset_test_outer.h5ad","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset_test_inner.h5ad", "C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset_test_unspecified.h5ad"]
+    a = 0
+    if a == 1:
+        for elem in list_test:
+            print(elem)
+            adata=get_ann(elem)
+            check_ann(adata)
+            print(adata.obs[['batch']].head())
+            print(adata.var[['gene_symbol']].head())
+
+    else:
+        merge_sets("C:\\Users\\Julia\\Desktop\\scrna\\dane\\test","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres")
+
     #print(adata.var.index[:10])
     
-    ensg_to_symbol("C:\\Users\Julia\\Desktop\\scrna\\dane\\test","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres")
-
     #quality_check("C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset.h5ad","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres")
 
     #run_analysis("C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres\\merged_dataset.h5ad","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres")
 
-    #merge_sets("C:\\Users\\Julia\\Desktop\\scrna\\dane\\test","C:\\Users\\Julia\\Desktop\\scrna\\dane\\testres")
     """
     task = input("Which task should be run: ( chose number ) \n 1. Merge sets \n 2. Run analysis \n 3. END \n")
     input_path = input()
